@@ -1,212 +1,168 @@
-﻿// Лабораторна робота: Багатопоточні програми на C#
-// Тема: Засоби створення багатопоточних програм
+using System.Diagnostics;
+using System.Numerics;
 
-using System;
-using System.Threading;
+namespace laba1_parallel_csharp;
 
-namespace ConsoleApp1
+internal sealed class SumWorker
 {
-    // Клас для роботи потоку обчислення суми послідовності
-    class SumThread
+    private readonly int _id;
+    private readonly int _step;
+    private readonly int _workTimeMs;
+    private readonly Thread _thread;
+    private volatile bool _stopRequested;
+
+    public BigInteger Sum { get; private set; } = BigInteger.Zero;
+    public long Count { get; private set; }
+
+    public int Id => _id;
+    public int Step => _step;
+    public int WorkTimeMs => _workTimeMs;
+
+    public SumWorker(int id, int step, int workTimeMs)
     {
-        private int threadId;           // Порядковий номер потоку
-        private int step;               // Крок послідовності
-        private int workTime;           // Час роботи потоку в мс
-        private volatile bool shouldStop; // Прапорець зупинки потоку
-        private long sum;               // Знайдена сума
-        private int count;              // Кількість використаних елементів
-        private Thread thread;          // Посилання на потік
+        if (step <= 0) throw new ArgumentOutOfRangeException(nameof(step));
+        if (workTimeMs <= 0) throw new ArgumentOutOfRangeException(nameof(workTimeMs));
 
-        public SumThread(int id, int step, int workTime)
+        _id = id;
+        _step = step;
+        _workTimeMs = workTimeMs;
+        _thread = new Thread(Run)
         {
-            this.threadId = id;
-            this.step = step;
-            this.workTime = workTime;
-            this.shouldStop = false;
-            this.sum = 0;
-            this.count = 0;
-            this.thread = new Thread(Run);
+            IsBackground = false,
+            Name = $"SumWorker-{id}"
+        };
+    }
+
+    public void Start() => _thread.Start();
+
+    public void RequestStop() => _stopRequested = true;
+
+    public void Join() => _thread.Join();
+
+    private void Run()
+    {
+        BigInteger currentValue = BigInteger.Zero;
+
+        while (!_stopRequested)
+        {
+            Sum += currentValue;
+            currentValue += _step;
+            Count++;
         }
 
-        // Запуск потоку
-        public void Start()
-        {
-            thread.Start();
-        }
+        Console.WriteLine(
+            $"[Потік {_id}] завершив роботу. Крок: {_step} | Доданків: {Count} | Сума: {Sum}");
+    }
+}
 
-        // Запуск потоку з автоматичною зупинкою через заданий час
-        public void StartWithTimer()
+internal sealed class Controller
+{
+    private readonly SumWorker[] _workers;
+    private readonly Thread _thread;
+
+    public Controller(SumWorker[] workers)
+    {
+        _workers = workers;
+        _thread = new Thread(Run)
         {
-            thread.Start();
-            // Створюємо окремий потік-таймер для зупинки
-            Thread timerThread = new Thread(() =>
+            IsBackground = false,
+            Name = "Controller"
+        };
+    }
+
+    public void Start() => _thread.Start();
+
+    public void Join() => _thread.Join();
+
+    private void Run()
+    {
+        var sw = Stopwatch.StartNew();
+        var stopSent = new bool[_workers.Length];
+        var active = _workers.Length;
+
+        while (active > 0)
+        {
+            for (int i = 0; i < _workers.Length; i++)
             {
-                Thread.Sleep(workTime);
-                Stop();
-            });
-            timerThread.IsBackground = true;
-            timerThread.Start();
-        }
+                if (stopSent[i])
+                {
+                    continue;
+                }
 
-        // Зупинка потоку
-        public void Stop()
-        {
-            shouldStop = true;
-        }
-
-        // Очікування завершення потоку
-        public void Join()
-        {
-            thread.Join();
-        }
-
-        // Основний метод роботи потоку
-        private void Run()
-        {
-            long currentValue = 0;
-
-            while (!shouldStop)
-            {
-                sum += currentValue;
-                currentValue += step;
-                count++;
+                if (sw.ElapsedMilliseconds >= _workers[i].WorkTimeMs)
+                {
+                    _workers[i].RequestStop();
+                    stopSent[i] = true;
+                    active--;
+                }
             }
 
-            // Виведення результатів після завершення потоку
-            Console.WriteLine($"Потік #{threadId}: Сума = {sum}, Кількість елементів = {count}, Крок = {step}, Час роботи = {workTime} мс");
+            Thread.Sleep(1);
+        }
+    }
+}
+
+internal static class Program
+{
+    private const int MinThreads = 1;
+    private const int MaxThreads = 32;
+    private const int MaxStep = 1_000_000;
+    private const int MaxWorkTime = 60_000;
+
+    private static int ReadInt(string prompt, int min, int max)
+    {
+        while (true)
+        {
+            Console.Write(prompt);
+            var input = Console.ReadLine();
+
+            if (int.TryParse(input, out int value) && value >= min && value <= max)
+            {
+                return value;
+            }
+
+            Console.WriteLine($"Помилка. Введіть ціле число в межах від {min} до {max}.");
         }
     }
 
-    // Головний клас програми
-    class Program
+    private static void Main()
     {
-        private const int MAX_THREADS = 32;  // Максимальна кількість потоків
-        private const int MIN_VALUE = 1;     // Мінімальне значення для введення
-        private const int MAX_STEP = 1000;   // Максимальний крок
-        private const int MAX_TIME = 60000;  // Максимальний час (60 секунд)
+        Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-        // Метод для отримання коректного числа від користувача
-        static int GetValidNumber(string prompt, int min, int max, int defaultValue)
+        Console.WriteLine("Лабораторна робота №1");
+        Console.WriteLine("Тема: Засоби створення багатопоточних програм");
+        Console.WriteLine();
+
+        int threadCount = ReadInt($"Кількість потоків ({MinThreads}-{MaxThreads}): ", MinThreads, MaxThreads);
+        Console.WriteLine();
+
+        var workers = new SumWorker[threadCount];
+
+        for (int i = 0; i < threadCount; i++)
         {
-            while (true)
-            {
-                Console.Write(prompt);
-                string? input = Console.ReadLine();
-                
-                // Перевірка на порожній ввід при автоматизованому тестуванні
-                if (string.IsNullOrEmpty(input))
-                {
-                    return defaultValue;
-                }
-                
-                if (int.TryParse(input, out int value))
-                {
-                    if (value >= min && value <= max)
-                    {
-                        return value;
-                    }
-                    else
-                    {
-                        Console.WriteLine($"  ❌ Помилка! Число має бути від {min} до {max}. Спробуйте ще раз.");
-                    }
-                }
-                else
-                {
-                    Console.WriteLine("  ❌ Помилка! Введіть коректне ціле число. Спробуйте ще раз.");
-                }
-            }
+            Console.WriteLine($"Налаштування потоку {i + 1}:");
+            int step = ReadInt($"  Крок ({MinThreads}-{MaxStep}): ", MinThreads, MaxStep);
+            int workTime = ReadInt($"  Час роботи в мс ({MinThreads}-{MaxWorkTime}): ", MinThreads, MaxWorkTime);
+            workers[i] = new SumWorker(i + 1, step, workTime);
+            Console.WriteLine();
         }
 
-        static void Main(string[] args)
+        foreach (var worker in workers)
         {
-            Console.OutputEncoding = System.Text.Encoding.UTF8;
-            Console.WriteLine("═══════════════════════════════════════════════════════════════");
-            Console.WriteLine("   Багатопоточна програма обчислення сум послідовностей");
-            Console.WriteLine("   Кожен потік має власний крок та час роботи");
-            Console.WriteLine("═══════════════════════════════════════════════════════════════\n");
-
-            // Введення кількості потоків з валідацією
-            Console.WriteLine($"📌 Обмеження: від {MIN_VALUE} до {MAX_THREADS} потоків\n");
-            int threadCount = GetValidNumber(
-                $"Введіть кількість потоків (1-{MAX_THREADS}): ",
-                MIN_VALUE,
-                MAX_THREADS,
-                4  // Значення за замовчуванням
-            );
-
-            // Створення масиву потоків
-            SumThread[] threads = new SumThread[threadCount];
-            
-            Console.WriteLine("\n" + new string('─', 60));
-            Console.WriteLine($"Налаштування параметрів для {threadCount} поток(ів):");
-            Console.WriteLine(new string('─', 60) + "\n");
-
-            // Введення параметрів для кожного потоку окремо
-            for (int i = 0; i < threadCount; i++)
-            {
-                Console.WriteLine($"╔═══ Потік #{i + 1} ═══╗");
-                
-                // Введення кроку для цього потоку з валідацією
-                int step = GetValidNumber(
-                    $"  Крок послідовності (1-{MAX_STEP}): ",
-                    MIN_VALUE,
-                    MAX_STEP,
-                    i + 1  // За замовчуванням
-                );
-
-                // Введення часу роботи для цього потоку з валідацією
-                int workTime = GetValidNumber(
-                    $"  Час роботи в мс (1-{MAX_TIME}): ",
-                    MIN_VALUE,
-                    MAX_TIME,
-                    100 * (i + 1)  // За замовчуванням
-                );
-
-                // Створення потоку з індивідуальними параметрами
-                threads[i] = new SumThread(i + 1, step, workTime);
-                Console.WriteLine($"  ✓ Потік #{i + 1}: крок={step}, час={workTime} мс");
-                Console.WriteLine("╚" + new string('═', 20) + "╝\n");
-            }
-
-            // Запуск всіх потоків
-            Console.WriteLine(new string('═', 60));
-            Console.WriteLine("🚀 Запуск потоків...");
-            Console.WriteLine(new string('═', 60) + "\n");
-            
-            for (int i = 0; i < threadCount; i++)
-            {
-                threads[i].StartWithTimer();
-                Console.WriteLine($"  ✓ Потік #{i + 1} запущено з індивідуальним таймером");
-            }
-
-            Console.WriteLine("\n" + new string('─', 60));
-            Console.WriteLine($"⏳ Всі {threadCount} поток(ів) працюють паралельно...");
-            Console.WriteLine("   Очікування завершення...");
-            Console.WriteLine(new string('─', 60) + "\n");
-
-            // Очікування завершення всіх потоків
-            for (int i = 0; i < threadCount; i++)
-            {
-                threads[i].Join();
-            }
-
-            Console.WriteLine("\n" + new string('═', 60));
-            Console.WriteLine("✅ Всі потоки успішно завершили роботу!");
-            Console.WriteLine(new string('═', 60));
-            
-            // Перевірка чи доступний консольний ввід
-            try
-            {
-                if (!Console.IsInputRedirected)
-                {
-                    Console.WriteLine("\n💡 Натисніть будь-яку клавішу для виходу...");
-                    Console.ReadKey();
-                }
-            }
-            catch
-            {
-                // Ігноруємо помилку при автоматизованому тестуванні
-            }
+            worker.Start();
         }
+
+        var controller = new Controller(workers);
+        controller.Start();
+
+        foreach (var worker in workers)
+        {
+            worker.Join();
+        }
+
+        controller.Join();
+
+        Console.WriteLine();
+        Console.WriteLine("Усі потоки завершили роботу.");
     }
 }
